@@ -1,8 +1,13 @@
 import type { MockedFunction } from "vitest"
 import { BedrockRuntimeClient, InvokeModelCommand } from "@aws-sdk/client-bedrock-runtime"
 
+import { NodeHttpHandler } from "@smithy/node-http-handler"
+import { HttpProxyAgent } from "http-proxy-agent"
+import { HttpsProxyAgent } from "https-proxy-agent"
+
 import { BedrockEmbedder } from "../bedrock"
 import { MAX_ITEM_TOKENS, INITIAL_RETRY_DELAY_MS } from "../../constants"
+import { getSystemProxyUrl } from "../../../../utils/networkProxy"
 
 import { clearAllMocks } from "../../../../test-utils/reset"
 
@@ -25,6 +30,17 @@ vitest.mock("@aws-sdk/credential-providers", () => ({
 	fromEnv: vitest.fn().mockReturnValue(Promise.resolve({})),
 	fromIni: vitest.fn().mockReturnValue(Promise.resolve({})),
 }))
+
+vitest.mock("../../../../utils/networkProxy", () => ({
+	getSystemProxyUrl: vitest.fn().mockReturnValue(undefined),
+}))
+vitest.mock("@smithy/node-http-handler", () => ({
+	NodeHttpHandler: vitest.fn().mockImplementation(function (options: unknown) {
+		return { options }
+	}),
+}))
+vitest.mock("http-proxy-agent", () => ({ HttpProxyAgent: vitest.fn() }))
+vitest.mock("https-proxy-agent", () => ({ HttpsProxyAgent: vitest.fn() }))
 
 // Mock TelemetryService
 vitest.mock("@roo-code/telemetry", () => ({
@@ -112,6 +128,42 @@ describe("BedrockEmbedder", () => {
 				expect.objectContaining({
 					userAgentAppId: expect.stringMatching(/^ZooCode#/),
 				}),
+			)
+		})
+
+		it("should tunnel through the system proxy when one is configured", () => {
+			// The embedder built in beforeEach already consumed these mocks.
+			vitest.mocked(getSystemProxyUrl).mockReturnValue("http://proxy.corp.local:3128")
+			vitest.mocked(NodeHttpHandler).mockClear()
+
+			new BedrockEmbedder("us-east-1", "test-profile", "amazon.titan-embed-text-v2:0")
+
+			expect(HttpProxyAgent).toHaveBeenCalledWith("http://proxy.corp.local:3128")
+			expect(HttpsProxyAgent).toHaveBeenCalledWith("http://proxy.corp.local:3128")
+
+			// Both agents must reach the handler: a client that tunnels only https still
+			// resolves http DNS locally, which is the ENOTFOUND this fix is about.
+			expect(NodeHttpHandler).toHaveBeenCalledOnce()
+			// The constructor accepts options or a provider function; only the object form is used here.
+			const handlerArg = vitest.mocked(NodeHttpHandler).mock.calls[0][0]
+			const handlerOptions = typeof handlerArg === "function" ? undefined : handlerArg
+			expect(handlerOptions?.httpAgent).toBe(vitest.mocked(HttpProxyAgent).mock.instances[0])
+			expect(handlerOptions?.httpsAgent).toBe(vitest.mocked(HttpsProxyAgent).mock.instances[0])
+
+			// ...and the handler must reach the client.
+			const clientConfig = vitest.mocked(BedrockRuntimeClient).mock.calls.at(-1)?.[0]
+			expect(clientConfig?.requestHandler).toBe(vitest.mocked(NodeHttpHandler).mock.instances[0])
+		})
+
+		it("should not install a request handler when no proxy is configured", () => {
+			vitest.mocked(getSystemProxyUrl).mockReturnValue(undefined)
+			vitest.mocked(NodeHttpHandler).mockClear()
+
+			new BedrockEmbedder("us-east-1", "test-profile", "amazon.titan-embed-text-v2:0")
+
+			expect(NodeHttpHandler).not.toHaveBeenCalled()
+			expect(BedrockRuntimeClient).toHaveBeenLastCalledWith(
+				expect.not.objectContaining({ requestHandler: expect.anything() }),
 			)
 		})
 	})
