@@ -48,10 +48,10 @@ export class BedrockEmbedder implements IEmbedder {
 		// endpoints fail with ENOTFOUND. The proxy agents use CONNECT so the proxy resolves
 		// the hostname instead, matching the chat provider in src/api/providers/bedrock.ts.
 		//
-		// The SDK resolves the runtime host internally, so it is rebuilt here to let NO_PROXY
-		// exclude a directly-reachable endpoint. `cn-*` regions live in the China partition.
-		const endpointSuffix = this.region.startsWith("cn-") ? "amazonaws.com.cn" : "amazonaws.com"
-		const proxyUrl = getSystemProxyUrl(`https://bedrock-runtime.${this.region}.${endpointSuffix}`)
+		// No destination is passed for the NO_PROXY check: the SDK resolves the host itself
+		// from the partition, FIPS/dualstack flags and endpoint overrides, so it cannot be
+		// reconstructed here. As in the chat provider, the proxy applies whenever one is set.
+		const proxyUrl = getSystemProxyUrl()
 
 		// Embeddings are sent one request per text, so keep the tunnel open between them.
 		const agentOptions = { keepAlive: true }
