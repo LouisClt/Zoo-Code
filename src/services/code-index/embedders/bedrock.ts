@@ -1,5 +1,9 @@
 import { BedrockRuntimeClient, InvokeModelCommand, InvokeModelCommandInput } from "@aws-sdk/client-bedrock-runtime"
 import { fromIni, fromNodeProviderChain } from "@aws-sdk/credential-providers"
+import { NodeHttpHandler } from "@smithy/node-http-handler"
+import { HttpProxyAgent } from "http-proxy-agent"
+import { HttpsProxyAgent } from "https-proxy-agent"
+import { getSystemProxyUrl } from "../../../utils/networkProxy"
 import { IEmbedder, EmbeddingResponse, EmbedderInfo } from "../interfaces"
 import {
 	MAX_BATCH_TOKENS,
@@ -40,10 +44,21 @@ export class BedrockEmbedder implements IEmbedder {
 		// If profile is specified, use it; otherwise use default credential chain
 		const credentials = this.profile ? fromIni({ profile: this.profile }) : fromNodeProviderChain()
 
+		// Behind a corporate proxy, Node resolves DNS locally before tunneling and Bedrock
+		// endpoints fail with ENOTFOUND. The proxy agents use CONNECT so the proxy resolves
+		// the hostname instead, matching the chat provider in src/api/providers/bedrock.ts.
+		const proxyUrl = getSystemProxyUrl()
+
 		this.bedrockClient = new BedrockRuntimeClient({
 			userAgentAppId: `ZooCode#${Package.version}`,
 			region: this.region,
 			credentials,
+			...(proxyUrl && {
+				requestHandler: new NodeHttpHandler({
+					httpAgent: new HttpProxyAgent(proxyUrl),
+					httpsAgent: new HttpsProxyAgent(proxyUrl),
+				}),
+			}),
 		})
 
 		this.defaultModelId = modelId || getDefaultModelId("bedrock")
