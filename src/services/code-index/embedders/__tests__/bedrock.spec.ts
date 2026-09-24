@@ -108,6 +108,11 @@ describe("BedrockEmbedder", () => {
 	})
 
 	describe("constructor", () => {
+		afterEach(() => {
+			// clearAllMocks() keeps implementations, so a proxy stub would leak into later tests.
+			vitest.mocked(getSystemProxyUrl).mockReturnValue(undefined)
+		})
+
 		it("should initialize with provided region, profile and model", () => {
 			expect(embedder.embedderInfo.name).toBe("bedrock")
 		})
@@ -138,8 +143,8 @@ describe("BedrockEmbedder", () => {
 
 			new BedrockEmbedder("us-east-1", "test-profile", "amazon.titan-embed-text-v2:0")
 
-			// The runtime host is passed so NO_PROXY can exclude a directly-reachable endpoint.
-			expect(getSystemProxyUrl).toHaveBeenLastCalledWith("https://bedrock-runtime.us-east-1.amazonaws.com")
+			// No destination is passed: the SDK resolves the host, so it cannot be guessed here.
+			expect(getSystemProxyUrl).toHaveBeenLastCalledWith()
 
 			// keepAlive reuses the tunnel across the one-request-per-text embedding calls.
 			expect(HttpProxyAgent).toHaveBeenCalledWith("http://proxy.corp.local:3128", { keepAlive: true })
@@ -157,12 +162,9 @@ describe("BedrockEmbedder", () => {
 			// ...and the handler must reach the client.
 			const clientConfig = vitest.mocked(BedrockRuntimeClient).mock.calls.at(-1)?.[0]
 			expect(clientConfig?.requestHandler).toBe(vitest.mocked(NodeHttpHandler).mock.instances[0])
-		})
 
-		it("should resolve the China partition host for cn- regions", () => {
-			new BedrockEmbedder("cn-north-1", "test-profile", "amazon.titan-embed-text-v2:0")
-
-			expect(getSystemProxyUrl).toHaveBeenLastCalledWith("https://bedrock-runtime.cn-north-1.amazonaws.com.cn")
+			// Pinning an endpoint here would break FIPS, dualstack and non-default partitions.
+			expect(clientConfig).not.toHaveProperty("endpoint")
 		})
 
 		it("should not install a request handler when no proxy is configured", () => {
