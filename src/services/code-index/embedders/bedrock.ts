@@ -47,7 +47,14 @@ export class BedrockEmbedder implements IEmbedder {
 		// Behind a corporate proxy, Node resolves DNS locally before tunneling and Bedrock
 		// endpoints fail with ENOTFOUND. The proxy agents use CONNECT so the proxy resolves
 		// the hostname instead, matching the chat provider in src/api/providers/bedrock.ts.
-		const proxyUrl = getSystemProxyUrl()
+		//
+		// The SDK resolves the runtime host internally, so it is rebuilt here to let NO_PROXY
+		// exclude a directly-reachable endpoint. `cn-*` regions live in the China partition.
+		const endpointSuffix = this.region.startsWith("cn-") ? "amazonaws.com.cn" : "amazonaws.com"
+		const proxyUrl = getSystemProxyUrl(`https://bedrock-runtime.${this.region}.${endpointSuffix}`)
+
+		// Embeddings are sent one request per text, so keep the tunnel open between them.
+		const agentOptions = { keepAlive: true }
 
 		this.bedrockClient = new BedrockRuntimeClient({
 			userAgentAppId: `ZooCode#${Package.version}`,
@@ -55,8 +62,8 @@ export class BedrockEmbedder implements IEmbedder {
 			credentials,
 			...(proxyUrl && {
 				requestHandler: new NodeHttpHandler({
-					httpAgent: new HttpProxyAgent(proxyUrl),
-					httpsAgent: new HttpsProxyAgent(proxyUrl),
+					httpAgent: new HttpProxyAgent(proxyUrl, agentOptions),
+					httpsAgent: new HttpsProxyAgent(proxyUrl, agentOptions),
 				}),
 			}),
 		})
