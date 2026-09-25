@@ -1,13 +1,9 @@
 import type { MockedFunction } from "vitest"
 import { BedrockRuntimeClient, InvokeModelCommand } from "@aws-sdk/client-bedrock-runtime"
 
-import { NodeHttpHandler } from "@smithy/node-http-handler"
-import { HttpProxyAgent } from "http-proxy-agent"
-import { HttpsProxyAgent } from "https-proxy-agent"
-
 import { BedrockEmbedder } from "../bedrock"
 import { MAX_ITEM_TOKENS, INITIAL_RETRY_DELAY_MS } from "../../constants"
-import { getSystemProxyUrl } from "../../../../utils/networkProxy"
+import { createProxyRoutingRequestHandler } from "../../../../utils/networkProxy"
 
 import { clearAllMocks } from "../../../../test-utils/reset"
 
@@ -32,15 +28,8 @@ vitest.mock("@aws-sdk/credential-providers", () => ({
 }))
 
 vitest.mock("../../../../utils/networkProxy", () => ({
-	getSystemProxyUrl: vitest.fn().mockReturnValue(undefined),
+	createProxyRoutingRequestHandler: vitest.fn().mockReturnValue(undefined),
 }))
-vitest.mock("@smithy/node-http-handler", () => ({
-	NodeHttpHandler: vitest.fn().mockImplementation(function (options: unknown) {
-		return { options }
-	}),
-}))
-vitest.mock("http-proxy-agent", () => ({ HttpProxyAgent: vitest.fn() }))
-vitest.mock("https-proxy-agent", () => ({ HttpsProxyAgent: vitest.fn() }))
 
 // Mock TelemetryService
 vitest.mock("@roo-code/telemetry", () => ({
@@ -109,8 +98,8 @@ describe("BedrockEmbedder", () => {
 
 	describe("constructor", () => {
 		afterEach(() => {
-			// clearAllMocks() keeps implementations, so a proxy stub would leak into later tests.
-			vitest.mocked(getSystemProxyUrl).mockReturnValue(undefined)
+			// clearAllMocks() keeps implementations, so a stub would leak into later tests.
+			vitest.mocked(createProxyRoutingRequestHandler).mockReturnValue(undefined)
 		})
 
 		it("should initialize with provided region, profile and model", () => {
@@ -136,44 +125,29 @@ describe("BedrockEmbedder", () => {
 			)
 		})
 
-		it("should tunnel through the system proxy when one is configured", () => {
-			// The embedder built in beforeEach already consumed these mocks.
-			vitest.mocked(getSystemProxyUrl).mockReturnValue("http://proxy.corp.local:3128")
-			vitest.mocked(NodeHttpHandler).mockClear()
+		it("should route requests through the proxy-aware handler when one is built", () => {
+			const handler = {
+				handle: vitest.fn(),
+				updateHttpClientConfig: vitest.fn(),
+				httpHandlerConfigs: vitest.fn(),
+				destroy: vitest.fn(),
+			}
+			vitest.mocked(createProxyRoutingRequestHandler).mockReturnValue(handler)
 
 			new BedrockEmbedder("us-east-1", "test-profile", "amazon.titan-embed-text-v2:0")
 
-			// No destination is passed: the SDK resolves the host, so it cannot be guessed here.
-			expect(getSystemProxyUrl).toHaveBeenLastCalledWith()
-
-			// keepAlive reuses the tunnel across the one-request-per-text embedding calls.
-			expect(HttpProxyAgent).toHaveBeenCalledWith("http://proxy.corp.local:3128", { keepAlive: true })
-			expect(HttpsProxyAgent).toHaveBeenCalledWith("http://proxy.corp.local:3128", { keepAlive: true })
-
-			// Both agents must reach the handler: a client that tunnels only https still
-			// resolves http DNS locally, which is the ENOTFOUND this fix is about.
-			expect(NodeHttpHandler).toHaveBeenCalledOnce()
-			// The constructor accepts options or a provider function; only the object form is used here.
-			const handlerArg = vitest.mocked(NodeHttpHandler).mock.calls[0][0]
-			const handlerOptions = typeof handlerArg === "function" ? undefined : handlerArg
-			expect(handlerOptions?.httpAgent).toBe(vitest.mocked(HttpProxyAgent).mock.instances[0])
-			expect(handlerOptions?.httpsAgent).toBe(vitest.mocked(HttpsProxyAgent).mock.instances[0])
-
-			// ...and the handler must reach the client.
 			const clientConfig = vitest.mocked(BedrockRuntimeClient).mock.calls.at(-1)?.[0]
-			expect(clientConfig?.requestHandler).toBe(vitest.mocked(NodeHttpHandler).mock.instances[0])
-
-			// Pinning an endpoint here would break FIPS, dualstack and non-default partitions.
+			expect(clientConfig?.requestHandler).toBe(handler)
+			// Pinning an endpoint here would break FIPS, dualstack and non-default partitions,
+			// and would take the routing decision away from the handler.
 			expect(clientConfig).not.toHaveProperty("endpoint")
 		})
 
-		it("should not install a request handler when no proxy is configured", () => {
-			vitest.mocked(getSystemProxyUrl).mockReturnValue(undefined)
-			vitest.mocked(NodeHttpHandler).mockClear()
+		it("should keep the client default handler when no proxy is configured", () => {
+			vitest.mocked(createProxyRoutingRequestHandler).mockReturnValue(undefined)
 
 			new BedrockEmbedder("us-east-1", "test-profile", "amazon.titan-embed-text-v2:0")
 
-			expect(NodeHttpHandler).not.toHaveBeenCalled()
 			expect(BedrockRuntimeClient).toHaveBeenLastCalledWith(
 				expect.not.objectContaining({ requestHandler: expect.anything() }),
 			)

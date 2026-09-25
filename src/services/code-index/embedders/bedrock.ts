@@ -1,9 +1,6 @@
 import { BedrockRuntimeClient, InvokeModelCommand, InvokeModelCommandInput } from "@aws-sdk/client-bedrock-runtime"
 import { fromIni, fromNodeProviderChain } from "@aws-sdk/credential-providers"
-import { NodeHttpHandler } from "@smithy/node-http-handler"
-import { HttpProxyAgent } from "http-proxy-agent"
-import { HttpsProxyAgent } from "https-proxy-agent"
-import { getSystemProxyUrl } from "../../../utils/networkProxy"
+import { createProxyRoutingRequestHandler } from "../../../utils/networkProxy"
 import { IEmbedder, EmbeddingResponse, EmbedderInfo } from "../interfaces"
 import {
 	MAX_BATCH_TOKENS,
@@ -44,28 +41,16 @@ export class BedrockEmbedder implements IEmbedder {
 		// If profile is specified, use it; otherwise use default credential chain
 		const credentials = this.profile ? fromIni({ profile: this.profile }) : fromNodeProviderChain()
 
-		// Behind a corporate proxy, Node resolves DNS locally before tunneling and Bedrock
-		// endpoints fail with ENOTFOUND. The proxy agents use CONNECT so the proxy resolves
-		// the hostname instead, matching the chat provider in src/api/providers/bedrock.ts.
-		//
-		// No destination is passed for the NO_PROXY check: the SDK resolves the host itself
-		// from the partition, FIPS/dualstack flags and endpoint overrides, so it cannot be
-		// reconstructed here. As in the chat provider, the proxy applies whenever one is set.
-		const proxyUrl = getSystemProxyUrl()
-
-		// Embeddings are sent one request per text, so keep the tunnel open between them.
-		const agentOptions = { keepAlive: true }
+		// Behind a corporate proxy, Node resolves DNS locally and Bedrock endpoints fail with
+		// ENOTFOUND. The handler tunnels through the proxy with CONNECT so the proxy resolves
+		// the hostname, and connects directly to the destinations NO_PROXY excludes.
+		const requestHandler = createProxyRoutingRequestHandler()
 
 		this.bedrockClient = new BedrockRuntimeClient({
 			userAgentAppId: `ZooCode#${Package.version}`,
 			region: this.region,
 			credentials,
-			...(proxyUrl && {
-				requestHandler: new NodeHttpHandler({
-					httpAgent: new HttpProxyAgent(proxyUrl, agentOptions),
-					httpsAgent: new HttpsProxyAgent(proxyUrl, agentOptions),
-				}),
-			}),
+			...(requestHandler && { requestHandler }),
 		})
 
 		this.defaultModelId = modelId || getDefaultModelId("bedrock")
