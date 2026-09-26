@@ -528,13 +528,14 @@ describe("networkProxy", () => {
 			expect(NodeHttpHandler).not.toHaveBeenCalled()
 		})
 
-		it("should build both proxy agents with a reusable tunnel", () => {
+		it("should build both proxy agents without keeping connections alive", () => {
 			process.env.HTTPS_PROXY = "http://proxy.corp:3128"
 
 			expect(createProxyRoutingRequestHandler()).toBeDefined()
 
-			expect(HttpProxyAgent).toHaveBeenCalledWith("http://proxy.corp:3128", { keepAlive: true })
-			expect(HttpsProxyAgent).toHaveBeenCalledWith("http://proxy.corp:3128", { keepAlive: true })
+			// No agent options: an idle connection would outlive the request that opened it.
+			expect(HttpProxyAgent).toHaveBeenCalledWith("http://proxy.corp:3128")
+			expect(HttpsProxyAgent).toHaveBeenCalledWith("http://proxy.corp:3128")
 			const { proxied } = innerHandlers()
 			expect(proxied?.options?.httpAgent).toBe(vi.mocked(HttpProxyAgent).mock.instances[0])
 			expect(proxied?.options?.httpsAgent).toBe(vi.mocked(HttpsProxyAgent).mock.instances[0])
