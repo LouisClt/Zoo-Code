@@ -445,20 +445,18 @@ export interface ProxyRoutingHandler {
  * override — so the destination is only known once a request has been built. Choosing here is
  * what makes NO_PROXY apply to the host actually called, rather than one guessed up front.
  *
- * Both routes are HTTP/1.1. A client whose default handler is NodeHttp2Handler therefore drops
- * to 1.1 once a proxy is configured, including on the direct route; the Bedrock calls involved
- * are unary requests, and the chat provider already tunnels over 1.1.
+ * The agents take no options, so no connection outlives its request. Both routes are HTTP/1.1:
+ * a client defaulting to NodeHttp2Handler drops to 1.1 once a proxy is configured, which is what
+ * the chat provider already does.
  */
 class ProxyRoutingRequestHandler implements ProxyRoutingHandler {
 	private readonly direct = new NodeHttpHandler()
 	private readonly proxied: NodeHttpHandler
 
 	constructor(proxyUrl: string) {
-		// Callers such as the code-index embedder send one request per item, so keep the tunnel.
-		const agentOptions = { keepAlive: true }
 		this.proxied = new NodeHttpHandler({
-			httpAgent: new HttpProxyAgent(proxyUrl, agentOptions),
-			httpsAgent: new HttpsProxyAgent(proxyUrl, agentOptions),
+			httpAgent: new HttpProxyAgent(proxyUrl),
+			httpsAgent: new HttpsProxyAgent(proxyUrl),
 		})
 	}
 
