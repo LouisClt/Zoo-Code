@@ -528,45 +528,56 @@ describe("networkProxy", () => {
 			expect(NodeHttpHandler).not.toHaveBeenCalled()
 		})
 
-		it("should build both proxy agents without keeping connections alive", () => {
+		it("should build both proxy agents with the keep-alive defaults of the direct route", () => {
 			process.env.HTTPS_PROXY = "http://proxy.corp:3128"
 
 			expect(createProxyRoutingRequestHandler()).toBeDefined()
 
-			// No agent options: an idle connection would outlive the request that opened it.
-			expect(HttpProxyAgent).toHaveBeenCalledWith("http://proxy.corp:3128")
-			expect(HttpsProxyAgent).toHaveBeenCalledWith("http://proxy.corp:3128")
+			const agentOptions = { keepAlive: true, maxSockets: 50 }
+			expect(HttpProxyAgent).toHaveBeenCalledWith("http://proxy.corp:3128", agentOptions)
+			expect(HttpsProxyAgent).toHaveBeenCalledWith("http://proxy.corp:3128", agentOptions)
 			const { proxied } = innerHandlers()
 			expect(proxied?.options?.httpAgent).toBe(vi.mocked(HttpProxyAgent).mock.instances[0])
 			expect(proxied?.options?.httpsAgent).toBe(vi.mocked(HttpsProxyAgent).mock.instances[0])
 		})
 
-		it("should send a request through the proxy when NO_PROXY does not cover it", () => {
+		it("should send a request through the proxy when NO_PROXY does not cover it", async () => {
 			process.env.HTTPS_PROXY = "http://proxy.corp:3128"
 			process.env.NO_PROXY = "example.com"
 
 			const handler = createProxyRoutingRequestHandler()
-			const request = requestTo("bedrock-runtime.us-east-1.amazonaws.com")
-			handler?.handle(request)
-
 			const { direct, proxied } = innerHandlers()
-			expect(proxied?.handle).toHaveBeenCalledWith(request)
+			const response = { response: { statusCode: 200 } }
+			proxied?.handle.mockResolvedValue(response)
+
+			// The request options carry the abort signal and timeout, so they must reach the route.
+			const request = requestTo("bedrock-runtime.us-east-1.amazonaws.com")
+			const requestOptions = { abortSignal: new AbortController().signal, requestTimeout: 1234 }
+			const result = handler?.handle(request, requestOptions)
+
+			expect(proxied?.handle).toHaveBeenCalledWith(request, requestOptions)
 			expect(direct?.handle).not.toHaveBeenCalled()
+			await expect(result).resolves.toBe(response)
 		})
 
-		it("should send a request directly when NO_PROXY covers its host", () => {
+		it("should send a request directly when NO_PROXY covers its host", async () => {
 			process.env.HTTPS_PROXY = "http://proxy.corp:3128"
 			process.env.NO_PROXY = "amazonaws.com"
 
 			const handler = createProxyRoutingRequestHandler()
+			const { direct, proxied } = innerHandlers()
+			const response = { response: { statusCode: 200 } }
+			direct?.handle.mockResolvedValue(response)
+
 			// The host is only known per request, which is the point of deciding here: indexed
 			// file contents must not reach a proxy the user excluded.
 			const request = requestTo("bedrock-runtime.eu-west-1.amazonaws.com")
-			handler?.handle(request)
+			const requestOptions = { abortSignal: new AbortController().signal, requestTimeout: 1234 }
+			const result = handler?.handle(request, requestOptions)
 
-			const { direct, proxied } = innerHandlers()
-			expect(direct?.handle).toHaveBeenCalledWith(request)
+			expect(direct?.handle).toHaveBeenCalledWith(request, requestOptions)
 			expect(proxied?.handle).not.toHaveBeenCalled()
+			await expect(result).resolves.toBe(response)
 		})
 
 		it("should send every request directly when NO_PROXY is '*'", () => {

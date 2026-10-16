@@ -445,18 +445,20 @@ export interface ProxyRoutingHandler {
  * override — so the destination is only known once a request has been built. Choosing here is
  * what makes NO_PROXY apply to the host actually called, rather than one guessed up front.
  *
- * The agents take no options, so no connection outlives its request. Both routes are HTTP/1.1:
- * a client defaulting to NodeHttp2Handler drops to 1.1 once a proxy is configured, which is what
- * the chat provider already does.
+ * Both routes are HTTP/1.1: a client defaulting to NodeHttp2Handler drops to 1.1 once a proxy is
+ * configured, which is what the chat provider already does.
  */
 class ProxyRoutingRequestHandler implements ProxyRoutingHandler {
 	private readonly direct = new NodeHttpHandler()
 	private readonly proxied: NodeHttpHandler
 
 	constructor(proxyUrl: string) {
+		// Smithy applies these defaults only to agents it builds itself, as for the direct route.
+		// Without them every proxied request would pay a fresh CONNECT and TLS handshake.
+		const agentOptions = { keepAlive: true, maxSockets: 50 }
 		this.proxied = new NodeHttpHandler({
-			httpAgent: new HttpProxyAgent(proxyUrl),
-			httpsAgent: new HttpsProxyAgent(proxyUrl),
+			httpAgent: new HttpProxyAgent(proxyUrl, agentOptions),
+			httpsAgent: new HttpsProxyAgent(proxyUrl, agentOptions),
 		})
 	}
 
